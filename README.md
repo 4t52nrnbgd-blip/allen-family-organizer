@@ -33,5 +33,61 @@ Build a mobile-friendly web app that both adults can securely sign into, view, a
 5. Add recurring reminders, shopping, Bear, and meal planning.
 6. Set up deployment and verify the app on iPhones.
 
-## Current status (2026-11-02)
-Repository initialized. Application source files were not yet found on the main branch when this plan was recorded. Next step: scaffold the app, run it, and commit the first working version.
+## How to run locally
+
+Requires Node.js 22 or newer.
+
+```bash
+npm install
+npm start
+```
+
+Then open http://localhost:3000. The first visit shows a setup screen: create
+a login for Michelle or Chad (password of at least 6 characters), then create
+the other member's login from the Account tab after signing in. Demo data is
+seeded automatically on first run (clearly labeled `Sample: `); real details
+are entered after signing in.
+
+By default the app stores data in a local SQLite file at `./data/allen.db`.
+Set `DATABASE_URL` to use Postgres instead.
+
+## Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | Port to listen on (default `3000`). |
+| `SESSION_SECRET` | Secret used by the session system. Required in production; set a long random string. |
+| `DATABASE_URL` | Postgres connection string. Leave blank for local SQLite. |
+| `SQLITE_PATH` | Path to the local SQLite file (default `./data/allen.db`). |
+
+Copy `.env.example` to `.env` for local use. Never commit `.env` or any real
+secrets to GitHub.
+
+## How to deploy on Render
+
+1. Push this repo to GitHub.
+2. In Render, choose **New → Web Service** and select the repo. Render reads
+   `render.yaml` and creates the web service (`the-allens`, free plan) and its
+   Postgres database (`the-allens-db`, free plan).
+3. Render generates `SESSION_SECRET` and `DATABASE_URL` from `render.yaml`;
+   confirm they are set in the service's environment settings.
+4. Deploy and open the service URL.
+
+**The hosted version starts empty.** Michelle and Chad recreate their logins
+there (same setup screen as local). Data from the Muse version does not carry
+over, and the two logins created locally do not carry over either.
+
+Free-tier caveats:
+
+- Render's free web service sleeps after a period of inactivity, so the first
+  load after idle time is slow (up to about a minute).
+- Render's free Postgres database expires after 30 days. For long-term use,
+  upgrade the database to a paid plan before it expires, or the stored data
+  will be lost.
+
+## Current status (2026-11-07)
+Standalone rebuild in progress: the Express + SQLite/Postgres backend is
+scaffolded (auth, calendar, tasks, refills, meals, groceries, Bear's care)
+with demo seed data. The frontend (`public/`) is being built separately.
+Next steps: finish the frontend, run the app locally, verify sign-in and
+shared data from two accounts, then deploy to Render.

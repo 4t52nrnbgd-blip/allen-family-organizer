@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: the-allens
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: the-allens-db
+          property: connectionString
+
+databases:
+  - name: the-allens-db
+    plan: free

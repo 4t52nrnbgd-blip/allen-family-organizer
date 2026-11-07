@@ -1,0 +1,1 @@
+{"dependencies":{"bcryptjs":"^3.0.2","express":"^5.1.0","pg":"^8.16.3"},"description":"A private, shared household organizer for Michelle and Chad.","engines":{"node":">=22"},"main":"server/server.js","name":"allen-family-organizer","scripts":{"dev":"node server/server.js","start":"node server/server.js"},"version":"0.1.0"}
