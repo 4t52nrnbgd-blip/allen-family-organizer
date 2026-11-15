@@ -578,7 +578,7 @@ function renderTasks() {
   form.appendChild(labeledInput('Title', textInput('title', { required: true, maxLength: 200, placeholder: 'e.g. Water the plants' })));
   const row1 = el('div', 'form-row');
   row1.appendChild(labeledInput('Assign to', selectInput('assignee', ['Either', 'Michelle', 'Chad'], 'Either')));
-  row1.appendChild(labeledInput('Category', selectInput('category', ['Household', 'Shopping', 'Bear\u2019s care', 'Health', 'Faith & service', 'Other'], 'Household')));
+  row1.appendChild(labeledInput('Category', selectInput('category', ['Household', 'Shopping', 'Bear\'s care', 'Health', 'Faith & service', 'Other'], 'Household')));
   form.appendChild(row1);
   form.appendChild(labeledInput('Due date', textInput('dueDate', { type: 'date' })));
   form.appendChild(err);
