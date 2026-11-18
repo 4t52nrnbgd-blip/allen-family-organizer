@@ -112,6 +112,12 @@ function isValidDate(s) {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
+function isValidTime(s) {
+  if (typeof s !== "string" || !/^\d{2}:\d{2}$/.test(s)) return false;
+  const h = Number(s.slice(0, 2)), m = Number(s.slice(3, 5));
+  return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+}
+
 function reqTitle(value, label = "Title") {
   if (typeof value !== "string" || value.trim() === "") return `${label} is required.`;
   if (value.trim().length > 200) return `${label} must be 200 characters or fewer.`;
@@ -150,7 +156,8 @@ const mapEvent = (r) => r && {
 };
 const mapTask = (r) => r && {
   id: r.id, title: r.title, assignee: r.assignee, category: r.category,
-  dueDate: r.due_date, done: r.done, createdBy: r.created_by, createdAt: r.created_at,
+  dueDate: r.due_date, dueTime: r.due_time || "", notes: r.notes || "",
+  done: r.done, createdBy: r.created_by, createdAt: r.created_at,
 };
 const mapRefill = (r) => r && {
   id: r.id, medication: r.medication, nextDue: r.next_due, intervalDays: r.interval_days,
@@ -302,6 +309,7 @@ app.get("/api/overview", requireAuth, ah(async (req, res) => {
   tasks.sort((a, b) =>
     (a.done - b.done) ||
     ((a.due_date || "9999-12-31").localeCompare(b.due_date || "9999-12-31")) ||
+    ((a.due_time || "99:99").localeCompare(b.due_time || "99:99")) ||
     a.created_at.localeCompare(b.created_at));
   meals.sort((a, b) =>
     a.date.localeCompare(b.date) ||
@@ -361,20 +369,24 @@ const TASK_ASSIGNEES = ["Michelle", "Chad", "Either"];
 const TASK_CATEGORIES = ["Household", "Shopping", "Bear's care", "Health", "Faith & service", "Other"];
 
 app.post("/api/tasks", requireAuth, ah(async (req, res) => {
-  const { title, assignee, category, dueDate } = req.body || {};
+  const { title, assignee, category, dueDate, dueTime, notes } = req.body || {};
   const err = reqTitle(title);
   if (err) return bad(res, err);
   const assigneeVal = assignee === undefined ? "Either" : assignee;
   const categoryVal = category === undefined ? "Household" : category;
   const dueVal = dueDate === undefined ? "" : dueDate;
+  const dueTimeVal = dueTime === undefined ? "" : dueTime;
+  const notesVal = optString(notes, 500);
   let enumErr = checkEnum(assigneeVal, TASK_ASSIGNEES, "Assignee");
   if (enumErr) return bad(res, enumErr);
   enumErr = checkEnum(categoryVal, TASK_CATEGORIES, "Category");
   if (enumErr) return bad(res, enumErr);
   if (dueVal !== "" && !isValidDate(dueVal)) return bad(res, "Due date must be YYYY-MM-DD.");
+  if (dueTimeVal !== "" && !isValidTime(dueTimeVal)) return bad(res, "Due time must be HH:MM.");
+  if (notesVal === null) return bad(res, "Notes must be 500 characters or fewer.");
   const result = await db.run(
-    "INSERT INTO tasks (title, assignee, category, due_date, done, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-    [title.trim(), assigneeVal, categoryVal, dueVal, false, req.member, new Date().toISOString()]
+    "INSERT INTO tasks (title, assignee, category, due_date, due_time, notes, done, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    [title.trim(), assigneeVal, categoryVal, dueVal, dueTimeVal, notesVal, false, req.member, new Date().toISOString()]
   );
   res.json({ ok: true, id: result.id });
 }));

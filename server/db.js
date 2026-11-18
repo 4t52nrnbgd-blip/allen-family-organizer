@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee TEXT DEFAULT 'Either',
   category TEXT DEFAULT 'Household',
   due_date TEXT DEFAULT '',
+  due_time TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
   done INTEGER DEFAULT 0,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -203,6 +205,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee TEXT DEFAULT 'Either',
   category TEXT DEFAULT 'Household',
   due_date TEXT DEFAULT '',
+  due_time TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
   done BOOLEAN DEFAULT FALSE,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -276,6 +280,25 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
 );
 `;
 
+// Add columns to an existing database when the app updates: CREATE TABLE IF NOT
+// EXISTS never touches a table that already exists, so new columns need a
+// migration. Postgres supports ADD COLUMN IF NOT EXISTS; SQLite does not, so
+// check PRAGMA table_info there first.
+async function migrate() {
+  const wanted = ['due_time', 'notes'];
+  if (usePg) {
+    for (const col of wanted) {
+      await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
+    }
+  } else {
+    const rows = sqliteDb.prepare(`PRAGMA table_info(tasks)`).all();
+    const have = new Set(rows.map((r) => r.name));
+    for (const col of wanted) {
+      if (!have.has(col)) sqliteDb.exec(`ALTER TABLE tasks ADD COLUMN ${col} TEXT DEFAULT ''`);
+    }
+  }
+}
+
 async function initDb() {
   const schema = usePg ? PG_SCHEMA : SQLITE_SCHEMA;
   if (usePg) {
@@ -283,6 +306,7 @@ async function initDb() {
   } else {
     sqliteDb.exec(schema);
   }
+  await migrate();
 }
 
 const DATA_TABLES = [

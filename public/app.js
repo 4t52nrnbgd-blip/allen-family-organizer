@@ -518,11 +518,42 @@ function renderCalendar() {
 }
 
 /* ---------- Tasks ---------- */
+function taskRow(t) {
+  const li = el('li');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!t.done;
+  cb.setAttribute('aria-label', 'Mark done');
+  cb.addEventListener('change', async function () {
+    try {
+      await api('/api/tasks/' + t.id, { method: 'PATCH', body: JSON.stringify({ done: cb.checked ? 1 : 0 }) });
+      await refresh();
+    } catch (e2) { toast(e2.message, true); cb.checked = !cb.checked; }
+  });
+  li.appendChild(cb);
+  const g = el('div', 'grow');
+  g.appendChild(el('div', t.done ? 'title done-text' : 'title', t.title));
+  const meta = [t.assignee || 'Either', t.category || 'Household'];
+  if (t.dueDate) meta.push(prettyDate(t.dueDate) + (t.dueTime ? ' ' + t.dueTime : ''));
+  else if (t.dueTime) meta.push(t.dueTime);
+  g.appendChild(el('div', 'muted small', meta.join(' · ')));
+  if (t.notes) g.appendChild(el('div', 'muted small', t.notes));
+  li.appendChild(g);
+  if (t.dueDate && !t.done) li.appendChild(dueBadge(t.dueDate));
+  const del = deleteBtn();
+  del.addEventListener('click', async function () {
+    try { await api('/api/tasks/' + t.id, { method: 'DELETE' }); toast('Task deleted.'); await refresh(); }
+    catch (e2) { toast(e2.message, true); }
+  });
+  li.appendChild(del);
+  return li;
+}
+
 function renderTasks() {
   view.appendChild(sectionTitle('Tasks'));
 
   const filterRow = el('div', 'form-row');
-  filterRow.appendChild(labeledInput('Show', selectInput('filter', ['All', 'Michelle', 'Chad', 'Either', 'Done'], taskFilter)));
+  filterRow.appendChild(labeledInput('Show', selectInput('filter', ['All', 'Today', 'Michelle', 'Chad', 'Either', 'Done'], taskFilter)));
   filterRow.firstChild.querySelector('select').addEventListener('change', function (e) {
     taskFilter = e.target.value;
     render();
@@ -532,43 +563,51 @@ function renderTasks() {
   const card = el('div', 'card');
   let list = data.tasks.slice();
   if (taskFilter === 'Done') list = list.filter(function (t) { return t.done; });
+  else if (taskFilter === 'Today') list = list.filter(function (t) { return !t.done && t.dueDate === localToday(); });
   else if (taskFilter !== 'All') list = list.filter(function (t) { return !t.done && t.assignee === taskFilter; });
   else list = list.filter(function (t) { return !t.done; });
+  if (taskFilter === 'Today') list.sort(function (a, b) { return (a.dueTime || '99:99').localeCompare(b.dueTime || '99:99') || (a.createdAt || '').localeCompare(b.createdAt || ''); });
   // Keep done items visible under "Done" filter; otherwise show open tasks first.
-  if (!list.length) card.appendChild(emptyState(taskFilter === 'Done' ? 'No completed tasks yet.' : 'No tasks here. Add one below.'));
+  if (!list.length) card.appendChild(emptyState(taskFilter === 'Done' ? 'No completed tasks yet.' : taskFilter === 'Today' ? 'No tasks due today.' : 'No tasks here. Add one below.'));
   else {
     const ul = el('ul', 'list');
-    list.forEach(function (t) {
-      const li = el('li');
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !!t.done;
-      cb.setAttribute('aria-label', 'Mark done');
-      cb.addEventListener('change', async function () {
-        try {
-          await api('/api/tasks/' + t.id, { method: 'PATCH', body: JSON.stringify({ done: cb.checked ? 1 : 0 }) });
-          await refresh();
-        } catch (e2) { toast(e2.message, true); cb.checked = !cb.checked; }
-      });
-      li.appendChild(cb);
-      const g = el('div', 'grow');
-      g.appendChild(el('div', t.done ? 'title done-text' : 'title', t.title));
-      const meta = [t.assignee || 'Either', t.category || 'Household'];
-      if (t.dueDate) meta.push(prettyDate(t.dueDate));
-      g.appendChild(el('div', 'muted small', meta.join(' · ')));
-      li.appendChild(g);
-      if (t.dueDate && !t.done) li.appendChild(dueBadge(t.dueDate));
-      const del = deleteBtn();
-      del.addEventListener('click', async function () {
-        try { await api('/api/tasks/' + t.id, { method: 'DELETE' }); toast('Task deleted.'); await refresh(); }
-        catch (e2) { toast(e2.message, true); }
-      });
-      li.appendChild(del);
-      ul.appendChild(li);
-    });
+    list.forEach(function (t) { ul.appendChild(taskRow(t)); });
     card.appendChild(ul);
   }
   view.appendChild(card);
+
+  // Done section — completed tasks tucked away, with a one-tap clear-out.
+  let doneTasks = data.tasks.filter(function (t) { return t.done; });
+  if (taskFilter === 'Michelle' || taskFilter === 'Chad' || taskFilter === 'Either') {
+    doneTasks = doneTasks.filter(function (t) { return t.assignee === taskFilter; });
+  }
+  if (taskFilter !== 'Done' && doneTasks.length) {
+    const doneCard = el('div', 'card');
+    doneCard.appendChild(el('h3', null, 'Done (' + doneTasks.length + ')'));
+    const doneList = el('ul', 'list');
+    doneList.hidden = true;
+    doneTasks.forEach(function (t) { doneList.appendChild(taskRow(t)); });
+    doneCard.appendChild(doneList);
+    const toggleBtn = submitBtn('Show completed', 'btn-secondary');
+    toggleBtn.type = 'button';
+    toggleBtn.addEventListener('click', function () {
+      doneList.hidden = !doneList.hidden;
+      toggleBtn.textContent = doneList.hidden ? 'Show completed' : 'Hide completed';
+    });
+    doneCard.appendChild(toggleBtn);
+    const clearBtn = submitBtn('Clear completed', 'btn-secondary');
+    clearBtn.type = 'button';
+    clearBtn.addEventListener('click', async function () {
+      if (!window.confirm('Delete all ' + doneTasks.length + ' completed tasks?')) return;
+      try {
+        for (const t of doneTasks) await api('/api/tasks/' + t.id, { method: 'DELETE' });
+        toast('Completed tasks cleared.');
+        await refresh();
+      } catch (e2) { toast(e2.message, true); }
+    });
+    doneCard.appendChild(clearBtn);
+    view.appendChild(doneCard);
+  }
 
   // Add task form
   const addCard = el('div', 'card');
@@ -580,7 +619,11 @@ function renderTasks() {
   row1.appendChild(labeledInput('Assign to', selectInput('assignee', ['Either', 'Michelle', 'Chad'], 'Either')));
   row1.appendChild(labeledInput('Category', selectInput('category', ['Household', 'Shopping', 'Bear\'s care', 'Health', 'Faith & service', 'Other'], 'Household')));
   form.appendChild(row1);
-  form.appendChild(labeledInput('Due date', textInput('dueDate', { type: 'date' })));
+  const row2 = el('div', 'form-row');
+  row2.appendChild(labeledInput('Due date', textInput('dueDate', { type: 'date' })));
+  row2.appendChild(labeledInput('Due time', textInput('dueTime', { type: 'time' })));
+  form.appendChild(row2);
+  form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, placeholder: 'Optional' })));
   form.appendChild(err);
   form.appendChild(submitBtn('Add task'));
   form.addEventListener('submit', async function (e) {
@@ -594,6 +637,8 @@ function renderTasks() {
           assignee: form.assignee.value,
           category: form.category.value,
           dueDate: form.dueDate.value || undefined,
+          dueTime: form.dueTime.value || undefined,
+          notes: form.notes.value.trim() || undefined,
         }),
       });
       toast('Task added.');
