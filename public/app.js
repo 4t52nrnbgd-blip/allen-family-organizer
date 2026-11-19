@@ -58,6 +58,29 @@ function shortDate(dateStr) {
   const d = parseDate(dateStr);
   return MONTHS[d.getMonth()].slice(0, 3) + ' ' + d.getDate();
 }
+function to12Hour(h, m) { // 24-hour hour + minute -> "7:30 PM"
+  const ap = h >= 12 ? 'PM' : 'AM';
+  let hh = h % 12;
+  if (hh === 0) hh = 12;
+  return hh + ':' + pad(m) + ' ' + ap;
+}
+function fmtTime(s) { // "HH:MM" (24h) -> "7:30 PM"; anything else passes through
+  if (typeof s !== 'string' || !/^\d{2}:\d{2}/.test(s)) return s || '';
+  return to12Hour(Number(s.slice(0, 2)), Number(s.slice(3, 5)));
+}
+function fmtTimeRange(start, end) { // "7:30–10:00 PM" style; end optional
+  if (!start) return '';
+  return end ? fmtTime(start) + '–' + fmtTime(end) : fmtTime(start);
+}
+function fmtClock(d) { // Date -> "6:42 PM"
+  return to12Hour(d.getHours(), d.getMinutes());
+}
+function personDot(who) { // small color dot: sage = Michelle, honey = Chad, neutral = anyone else
+  const d = document.createElement('span');
+  d.className = 'person-dot ' + (who === 'Michelle' ? 'person-dot-michelle' : who === 'Chad' ? 'person-dot-chad' : 'person-dot-either');
+  d.title = who || '';
+  return d;
+}
 
 /* ---------- API ---------- */
 let authState = null;   // {members, signedIn}
@@ -66,6 +89,9 @@ let currentTab = 'home';
 let taskFilter = 'All';
 let mealWeekStart = sundayStart(localToday());
 let editingMealId = null;
+let editingTaskId = null;
+let editingEventId = null;
+let lastUpdatedAt = null;
 let bearEditing = false;
 
 async function api(path, opts) {
@@ -85,8 +111,11 @@ async function api(path, opts) {
 }
 
 async function refresh() {
+  const y = window.scrollY;
   data = await api('/api/overview');
+  lastUpdatedAt = new Date();
   render();
+  window.scrollTo(0, y);
 }
 
 /* ---------- due-date badges ---------- */
@@ -244,6 +273,7 @@ function renderSignin() {
 async function loadApp() {
   try {
     data = await api('/api/overview');
+    lastUpdatedAt = new Date();
     nav.hidden = false;
     currentTab = 'home';
     render();
@@ -260,8 +290,21 @@ nav.addEventListener('click', function (e) {
   render();
 });
 
+// Manual refresh (topbar button) + auto-refresh when the app comes back
+// into view, so changes made on the other member's phone show up.
+const refreshBtn = document.getElementById('refresh-btn');
+if (refreshBtn) refreshBtn.addEventListener('click', async function () {
+  try { await refresh(); toast('Refreshed.'); }
+  catch (e) { toast(e.message, true); }
+});
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden && data) refresh().catch(function () { /* keep showing the last good data */ });
+});
+
 function render() {
   if (!data) { showAuth(); return; }
+  const sub = document.getElementById('topbar-sub');
+  if (sub) sub.textContent = 'Family organizer' + (lastUpdatedAt ? ' · Updated ' + fmtClock(lastUpdatedAt) : '');
   document.querySelectorAll('.nav-btn').forEach(function (b) {
     b.classList.toggle('active', b.dataset.tab === currentTab);
   });
@@ -280,7 +323,32 @@ function sectionTitle(text) { return el('h2', 'section-title', text); }
 /* ---------- Home ---------- */
 function renderHome() {
   const today = localToday();
+  const tomorrow = addDays(today, 1);
   view.appendChild(sectionTitle('Today — ' + prettyDate(today)));
+
+  // Up next: the next timed event or task, today first, then tomorrow.
+  const nowHM = pad(new Date().getHours()) + ':' + pad(new Date().getMinutes());
+  function upcomingItems(dateStr, after) {
+    const items = [];
+    data.events.forEach(function (e) {
+      if (e.date === dateStr && e.time && e.time >= after) items.push({ when: e.time, label: e.title });
+    });
+    data.tasks.forEach(function (t) {
+      if (!t.done && t.dueDate === dateStr && t.dueTime && t.dueTime >= after) items.push({ when: t.dueTime, label: t.title });
+    });
+    return items;
+  }
+  let nextItems = upcomingItems(today, nowHM);
+  let nextDay = today;
+  if (!nextItems.length) { nextItems = upcomingItems(tomorrow, '00:00'); nextDay = tomorrow; }
+  if (nextItems.length) {
+    nextItems.sort(function (a, b) { return a.when.localeCompare(b.when); });
+    const next = nextItems[0];
+    const upCard = el('div', 'card');
+    upCard.appendChild(el('h3', null, '⏭️ Up next'));
+    upCard.appendChild(el('p', null, (nextDay === today ? '' : 'Tomorrow · ') + fmtTime(next.when) + ' — ' + next.label));
+    view.appendChild(upCard);
+  }
 
   // Today's events
   const evCard = el('div', 'card');
@@ -291,10 +359,11 @@ function renderHome() {
     const ul = el('ul', 'list');
     todaysEvents.forEach(function (e) {
       const li = el('li');
+      li.appendChild(personDot(e.who || 'Family'));
       const g = el('div', 'grow');
       g.appendChild(el('div', 'title', e.title));
       const meta = [];
-      if (e.time) meta.push(e.time);
+      if (e.time) meta.push(fmtTimeRange(e.time, e.endTime));
       if (e.location) meta.push(e.location);
       if (e.who) meta.push(e.who);
       g.appendChild(el('div', 'muted small', meta.join(' · ')));
@@ -316,6 +385,7 @@ function renderHome() {
     const ul = el('ul', 'list');
     dueTasks.forEach(function (t) {
       const li = el('li');
+      li.appendChild(personDot(t.assignee || 'Either'));
       const g = el('div', 'grow');
       g.appendChild(el('div', 'title', t.title));
       g.appendChild(el('div', 'muted small', (t.assignee || 'Either') + ' · ' + prettyDate(t.dueDate)));
@@ -347,6 +417,50 @@ function renderHome() {
     mealTodayCard.appendChild(ul);
   }
   view.appendChild(mealTodayCard);
+
+  // Tomorrow peek
+  const tomCard = el('div', 'card');
+  tomCard.appendChild(el('h3', null, '📅 Tomorrow — ' + prettyDate(tomorrow)));
+  const tomEvents = data.events.filter(function (e) { return e.date === tomorrow; });
+  const tomTasks = data.tasks.filter(function (t) { return !t.done && t.dueDate === tomorrow; });
+  const tomMeals = data.meals
+    .filter(function (m) { return m.date === tomorrow; })
+    .sort(function (a, b) { return (MEAL_ORDER[a.mealType] || 3) - (MEAL_ORDER[b.mealType] || 3); });
+  if (!tomEvents.length && !tomTasks.length && !tomMeals.length) tomCard.appendChild(emptyState('Nothing planned for tomorrow yet.'));
+  else {
+    const ul = el('ul', 'list');
+    tomEvents.forEach(function (e) {
+      const li = el('li');
+      li.appendChild(personDot(e.who || 'Family'));
+      const g = el('div', 'grow');
+      g.appendChild(el('div', 'title', e.title));
+      const meta = [];
+      if (e.time) meta.push(fmtTimeRange(e.time, e.endTime));
+      if (e.location) meta.push(e.location);
+      g.appendChild(el('div', 'muted small', meta.join(' · ') || 'Event'));
+      li.appendChild(g);
+      ul.appendChild(li);
+    });
+    tomTasks.forEach(function (t) {
+      const li = el('li');
+      li.appendChild(personDot(t.assignee || 'Either'));
+      const g = el('div', 'grow');
+      g.appendChild(el('div', 'title', t.title));
+      g.appendChild(el('div', 'muted small', 'Task · ' + (t.assignee || 'Either') + (t.dueTime ? ' · ' + fmtTime(t.dueTime) : '')));
+      li.appendChild(g);
+      ul.appendChild(li);
+    });
+    tomMeals.forEach(function (m) {
+      const li = el('li');
+      const g = el('div', 'grow');
+      g.appendChild(el('div', 'title', m.title));
+      g.appendChild(el('div', 'muted small', 'Meal · ' + m.mealType));
+      li.appendChild(g);
+      ul.appendChild(li);
+    });
+    tomCard.appendChild(ul);
+  }
+  view.appendChild(tomCard);
 
   // Refills due soon (overdue or within 7 days)
   const refCard = el('div', 'card');
@@ -481,23 +595,34 @@ function renderCalendar() {
     const card = el('div', 'card');
     const ul = el('ul', 'list');
     byDate[d].forEach(function (e) {
+      if (e.id === editingEventId) return;
       const li = el('li');
+      li.appendChild(personDot(e.who || 'Family'));
       const g = el('div', 'grow');
       g.appendChild(el('div', 'title', e.title));
       const meta = [];
-      if (e.time) meta.push(e.time);
+      if (e.time) meta.push(fmtTimeRange(e.time, e.endTime));
       if (e.location) meta.push(e.location);
       if (e.who) meta.push(e.who);
       if (meta.length) g.appendChild(el('div', 'muted small', meta.join(' · ')));
       li.appendChild(g);
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button'; editBtn.className = 'btn-secondary btn-small'; editBtn.textContent = 'Edit';
+      editBtn.addEventListener('click', function () { editingEventId = e.id; render(); });
+      li.appendChild(editBtn);
       const del = deleteBtn();
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this event?')) return;
         try { await api('/api/events/' + e.id, { method: 'DELETE' }); toast('Event deleted.'); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });
       li.appendChild(del);
       ul.appendChild(li);
     });
+    if (editingEventId) {
+      const ed = byDate[d].find(function (x) { return x.id === editingEventId; });
+      if (ed) card.appendChild(eventEditForm(ed));
+    }
     card.appendChild(ul);
     view.appendChild(card);
   });
@@ -512,6 +637,7 @@ function renderCalendar() {
   row1.appendChild(labeledInput('Date', textInput('date', { type: 'date', required: true, value: today })));
   row1.appendChild(labeledInput('Time', textInput('time', { type: 'time' })));
   form.appendChild(row1);
+  form.appendChild(labeledInput('End time', textInput('endTime', { type: 'time' })));
   form.appendChild(labeledInput('Location', textInput('location', { maxLength: 200, placeholder: 'Optional' })));
   form.appendChild(labeledInput('Who', selectInput('who', ['Family', 'Michelle', 'Chad', 'Both'], 'Family')));
   form.appendChild(err);
@@ -526,6 +652,7 @@ function renderCalendar() {
           title: form.title.value.trim(),
           date: form.date.value,
           time: form.time.value,
+          endTime: form.endTime.value,
           location: form.location.value.trim(),
           who: form.who.value,
         }),
@@ -538,6 +665,52 @@ function renderCalendar() {
   view.appendChild(card);
 }
 
+function eventEditForm(e) {
+  const err = errorPara();
+  const form = document.createElement('form');
+  form.className = 'inline-form';
+  form.appendChild(labeledInput('Edit event', textInput('title', { required: true, maxLength: 200, value: e.title })));
+  const row1 = el('div', 'form-row');
+  row1.appendChild(labeledInput('Date', textInput('date', { type: 'date', required: true, value: e.date })));
+  row1.appendChild(labeledInput('Time', textInput('time', { type: 'time', value: e.time || '' })));
+  form.appendChild(row1);
+  form.appendChild(labeledInput('End time', textInput('endTime', { type: 'time', value: e.endTime || '' })));
+  form.appendChild(labeledInput('Location', textInput('location', { maxLength: 200, value: e.location || '' })));
+  form.appendChild(labeledInput('Who', selectInput('who', ['Family', 'Michelle', 'Chad', 'Both'], e.who || 'Family')));
+  form.appendChild(err);
+  const btnRow = el('div', 'form-row');
+  const save = submitBtn('Save changes', 'btn-small');
+  save.style.marginTop = '0';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'btn-secondary btn-small'; cancel.textContent = 'Cancel';
+  cancel.style.marginTop = '0';
+  cancel.addEventListener('click', function () { editingEventId = null; render(); });
+  btnRow.appendChild(save);
+  btnRow.appendChild(cancel);
+  form.appendChild(btnRow);
+  form.addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    err.hidden = true;
+    try {
+      await api('/api/events/' + e.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: form.title.value.trim(),
+          date: form.date.value,
+          time: form.time.value,
+          endTime: form.endTime.value,
+          location: form.location.value.trim(),
+          who: form.who.value,
+        }),
+      });
+      editingEventId = null;
+      toast('Event updated.');
+      await refresh();
+    } catch (e2) { showFormError(err, e2); }
+  });
+  return form;
+}
+
 /* ---------- Tasks ---------- */
 function taskRow(t) {
   const li = el('li');
@@ -546,23 +719,34 @@ function taskRow(t) {
   cb.checked = !!t.done;
   cb.setAttribute('aria-label', 'Mark done');
   cb.addEventListener('change', async function () {
+    const next = cb.checked;
+    t.done = next ? 1 : 0; // optimistic: show the change right away, then save
+    render();
     try {
-      await api('/api/tasks/' + t.id, { method: 'PATCH', body: JSON.stringify({ done: cb.checked ? 1 : 0 }) });
+      await api('/api/tasks/' + t.id, { method: 'PATCH', body: JSON.stringify({ done: next ? 1 : 0 }) });
       await refresh();
-    } catch (e2) { toast(e2.message, true); cb.checked = !cb.checked; }
+    } catch (e2) { toast(e2.message, true); t.done = next ? 0 : 1; render(); }
   });
   li.appendChild(cb);
+  li.appendChild(personDot(t.assignee || 'Either'));
   const g = el('div', 'grow');
   g.appendChild(el('div', t.done ? 'title done-text' : 'title', t.title));
   const meta = [t.assignee || 'Either', t.category || 'Household'];
-  if (t.dueDate) meta.push(prettyDate(t.dueDate) + (t.dueTime ? ' ' + t.dueTime : ''));
-  else if (t.dueTime) meta.push(t.dueTime);
+  if (t.dueDate) {
+    if (taskFilter === 'Today' && !t.done) meta.push(t.dueTime ? fmtTime(t.dueTime) : 'Today');
+    else meta.push(prettyDate(t.dueDate) + (t.dueTime ? ' ' + fmtTime(t.dueTime) : ''));
+  } else if (t.dueTime) meta.push(fmtTime(t.dueTime));
   g.appendChild(el('div', 'muted small', meta.join(' · ')));
   if (t.notes) g.appendChild(el('div', 'muted small', t.notes));
   li.appendChild(g);
   if (t.dueDate && !t.done) li.appendChild(dueBadge(t.dueDate));
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button'; editBtn.className = 'btn-secondary btn-small'; editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', function () { editingTaskId = t.id; render(); });
+  li.appendChild(editBtn);
   const del = deleteBtn();
   del.addEventListener('click', async function () {
+    if (!window.confirm('Delete this task?')) return;
     try { await api('/api/tasks/' + t.id, { method: 'DELETE' }); toast('Task deleted.'); await refresh(); }
     catch (e2) { toast(e2.message, true); }
   });
@@ -588,26 +772,37 @@ function renderTasks() {
   else if (taskFilter !== 'All') list = list.filter(function (t) { return !t.done && t.assignee === taskFilter; });
   else list = list.filter(function (t) { return !t.done; });
   if (taskFilter === 'Today') list.sort(function (a, b) { return (a.dueTime || '99:99').localeCompare(b.dueTime || '99:99') || (a.createdAt || '').localeCompare(b.createdAt || ''); });
-  // Keep done items visible under "Done" filter; otherwise show open tasks first.
-  if (!list.length) card.appendChild(emptyState(taskFilter === 'Done' ? 'No completed tasks yet.' : taskFilter === 'Today' ? 'No tasks due today.' : 'No tasks here. Add one below.'));
-  else {
-    const ul = el('ul', 'list');
-    list.forEach(function (t) { ul.appendChild(taskRow(t)); });
-    card.appendChild(ul);
-  }
-  view.appendChild(card);
-
-  // Done section — completed tasks tucked away, with a one-tap clear-out.
   let doneTasks = data.tasks.filter(function (t) { return t.done; });
   if (taskFilter === 'Michelle' || taskFilter === 'Chad' || taskFilter === 'Either') {
     doneTasks = doneTasks.filter(function (t) { return t.assignee === taskFilter; });
   }
+  // Keep done items visible under "Done" filter; otherwise show open tasks first.
+  if (!list.length) card.appendChild(emptyState(taskFilter === 'Done' ? 'No completed tasks yet.' : taskFilter === 'Today' ? 'No tasks due today.' : 'No tasks here. Add one below.'));
+  else {
+    const ul = el('ul', 'list');
+    list.forEach(function (t) { if (t.id !== editingTaskId) ul.appendChild(taskRow(t)); });
+    card.appendChild(ul);
+  }
+  view.appendChild(card);
+
+  // Edit form for the task being edited (in the main list or the Done section).
+  if (editingTaskId) {
+    let et = list.find(function (x) { return x.id === editingTaskId; });
+    if (!et) et = doneTasks.find(function (x) { return x.id === editingTaskId; });
+    if (et) {
+      const editCard = el('div', 'card');
+      editCard.appendChild(taskEditForm(et));
+      view.appendChild(editCard);
+    }
+  }
+
+  // Done section — completed tasks tucked away, with a one-tap clear-out.
   if (taskFilter !== 'Done' && doneTasks.length) {
     const doneCard = el('div', 'card');
     doneCard.appendChild(el('h3', null, 'Done (' + doneTasks.length + ')'));
     const doneList = el('ul', 'list');
     doneList.hidden = true;
-    doneTasks.forEach(function (t) { doneList.appendChild(taskRow(t)); });
+    doneTasks.forEach(function (t) { if (t.id !== editingTaskId) doneList.appendChild(taskRow(t)); });
     doneCard.appendChild(doneList);
     const toggleBtn = submitBtn('Show completed', 'btn-secondary');
     toggleBtn.type = 'button';
@@ -670,6 +865,54 @@ function renderTasks() {
   view.appendChild(addCard);
 }
 
+function taskEditForm(t) {
+  const err = errorPara();
+  const form = document.createElement('form');
+  form.className = 'inline-form';
+  form.appendChild(labeledInput('Edit task', textInput('title', { required: true, maxLength: 200, value: t.title })));
+  const row1 = el('div', 'form-row');
+  row1.appendChild(labeledInput('Assign to', selectInput('assignee', ['Either', 'Michelle', 'Chad'], t.assignee || 'Either')));
+  row1.appendChild(labeledInput('Category', selectInput('category', ['Household', 'Shopping', "Bear's care", 'Health', 'Faith & service', 'Other'], t.category || 'Household')));
+  form.appendChild(row1);
+  const row2 = el('div', 'form-row');
+  row2.appendChild(labeledInput('Due date', textInput('dueDate', { type: 'date', value: t.dueDate || '' })));
+  row2.appendChild(labeledInput('Due time', textInput('dueTime', { type: 'time', value: t.dueTime || '' })));
+  form.appendChild(row2);
+  form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, value: t.notes || '' })));
+  form.appendChild(err);
+  const btnRow = el('div', 'form-row');
+  const save = submitBtn('Save changes', 'btn-small');
+  save.style.marginTop = '0';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'btn-secondary btn-small'; cancel.textContent = 'Cancel';
+  cancel.style.marginTop = '0';
+  cancel.addEventListener('click', function () { editingTaskId = null; render(); });
+  btnRow.appendChild(save);
+  btnRow.appendChild(cancel);
+  form.appendChild(btnRow);
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    err.hidden = true;
+    try {
+      await api('/api/tasks/' + t.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: form.title.value.trim(),
+          assignee: form.assignee.value,
+          category: form.category.value,
+          dueDate: form.dueDate.value,
+          dueTime: form.dueTime.value,
+          notes: form.notes.value.trim(),
+        }),
+      });
+      editingTaskId = null;
+      toast('Task updated.');
+      await refresh();
+    } catch (e2) { showFormError(err, e2); }
+  });
+  return form;
+}
+
 /* ---------- Refills ---------- */
 function renderRefills() {
   view.appendChild(sectionTitle('Refills'));
@@ -706,6 +949,7 @@ function renderRefills() {
       del.className = 'btn-danger btn-small';
       del.textContent = 'Delete';
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this refill?')) return;
         try { await api('/api/refills/' + r.id, { method: 'DELETE' }); toast('Refill deleted.'); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });
@@ -821,6 +1065,7 @@ function renderMeals() {
         li.appendChild(editBtn);
         const del = deleteBtn();
         del.addEventListener('click', async function () {
+          if (!window.confirm('Delete this meal?')) return;
           try { await api('/api/meals/' + m.id, { method: 'DELETE' }); toast('Meal deleted.'); await refresh(); }
           catch (e2) { toast(e2.message, true); }
         });
@@ -930,10 +1175,13 @@ function renderGroceries() {
       cb.checked = !!g.done;
       cb.setAttribute('aria-label', 'Check off');
       cb.addEventListener('change', async function () {
+        const next = cb.checked;
+        g.done = next ? 1 : 0; // optimistic: show the change right away, then save
+        render();
         try {
-          await api('/api/groceries/' + g.id, { method: 'PATCH', body: JSON.stringify({ done: cb.checked ? 1 : 0 }) });
+          await api('/api/groceries/' + g.id, { method: 'PATCH', body: JSON.stringify({ done: next ? 1 : 0 }) });
           await refresh();
-        } catch (e2) { toast(e2.message, true); cb.checked = !cb.checked; }
+        } catch (e2) { toast(e2.message, true); g.done = next ? 0 : 1; render(); }
       });
       li.appendChild(cb);
       const gEl = el('div', 'grow');
@@ -945,6 +1193,7 @@ function renderGroceries() {
       li.appendChild(gEl);
       const del = deleteBtn();
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this item?')) return;
         try { await api('/api/groceries/' + g.id, { method: 'DELETE' }); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });
@@ -956,6 +1205,7 @@ function renderGroceries() {
     clearBtn.type = 'button'; clearBtn.className = 'btn-secondary btn-small btn-block';
     clearBtn.textContent = 'Clear checked';
     clearBtn.addEventListener('click', async function () {
+      if (!window.confirm('Delete all checked grocery items?')) return;
       try {
         const res = await api('/api/groceries/clear-checked', { method: 'POST' });
         toast(res.removed + ' checked item(s) cleared.');
@@ -1096,6 +1346,7 @@ function renderBear() {
       }
       const del = deleteBtn();
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this routine?')) return;
         try { await api('/api/bear/routines/' + r.id, { method: 'DELETE' }); toast('Routine deleted.'); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });
@@ -1158,6 +1409,7 @@ function renderBear() {
       li.appendChild(g);
       const del = deleteBtn();
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this log entry?')) return;
         try { await api('/api/bear/logs/' + l.id, { method: 'DELETE' }); toast('Log entry deleted.'); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });
@@ -1226,6 +1478,7 @@ function renderBear() {
       }
       const del = deleteBtn();
       del.addEventListener('click', async function () {
+        if (!window.confirm('Delete this care date?')) return;
         try { await api('/api/bear/reminders/' + r.id, { method: 'DELETE' }); toast('Care date deleted.'); await refresh(); }
         catch (e2) { toast(e2.message, true); }
       });

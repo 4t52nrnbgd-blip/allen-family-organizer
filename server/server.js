@@ -151,8 +151,8 @@ const requireAuth = ah(async (req, res, next) => {
 
 // Row -> API (camelCase) mappers. db layer already normalizes booleans to 0/1.
 const mapEvent = (r) => r && {
-  id: r.id, title: r.title, date: r.date, time: r.time, location: r.location,
-  who: r.who, createdBy: r.created_by, createdAt: r.created_at,
+  id: r.id, title: r.title, date: r.date, time: r.time, endTime: r.end_time || "",
+  location: r.location, who: r.who, createdBy: r.created_by, createdAt: r.created_at,
 };
 const mapTask = (r) => r && {
   id: r.id, title: r.title, assignee: r.assignee, category: r.category,
@@ -337,7 +337,7 @@ app.get("/api/overview", requireAuth, ah(async (req, res) => {
 const EVENT_WHO = ["Michelle", "Chad", "Both", "Family"];
 
 app.post("/api/events", requireAuth, ah(async (req, res) => {
-  const { title, date, time, location, who } = req.body || {};
+  const { title, date, time, endTime, location, who } = req.body || {};
   const err = reqTitle(title);
   if (err) return bad(res, err);
   if (!isValidDate(date)) return bad(res, "Date must be YYYY-MM-DD.");
@@ -347,11 +347,54 @@ app.post("/api/events", requireAuth, ah(async (req, res) => {
   const timeVal = optString(time);
   const locVal = optString(location);
   if (timeVal === null || locVal === null) return bad(res, "Time and location must be text.");
+  const endTimeVal = endTime === undefined ? "" : endTime;
+  if (endTimeVal !== "" && !isValidTime(endTimeVal)) return bad(res, "End time must be HH:MM.");
   const result = await db.run(
-    "INSERT INTO events (title, date, time, location, who, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
-    [title.trim(), date, timeVal, locVal, whoVal, req.member, new Date().toISOString()]
+    "INSERT INTO events (title, date, time, end_time, location, who, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    [title.trim(), date, timeVal, endTimeVal, locVal, whoVal, req.member, new Date().toISOString()]
   );
   res.json({ ok: true, id: result.id });
+}));
+
+app.patch("/api/events/:id", requireAuth, ah(async (req, res) => {
+  const row = await loadOr404(res, "events", req.params.id);
+  if (!row) return;
+  const { title, date, time, endTime, location, who } = req.body || {};
+  const updates = {};
+  if (title !== undefined) {
+    const err = reqTitle(title);
+    if (err) return bad(res, err);
+    updates.title = title.trim();
+  }
+  if (date !== undefined) {
+    if (!isValidDate(date)) return bad(res, "Date must be YYYY-MM-DD.");
+    updates.date = date;
+  }
+  if (time !== undefined) {
+    const v = optString(time);
+    if (v === null) return bad(res, "Time must be text.");
+    updates.time = v;
+  }
+  if (endTime !== undefined) {
+    if (endTime !== "" && !isValidTime(endTime)) return bad(res, "End time must be HH:MM.");
+    updates.end_time = endTime;
+  }
+  if (location !== undefined) {
+    const v = optString(location);
+    if (v === null) return bad(res, "Location must be text.");
+    updates.location = v;
+  }
+  if (who !== undefined) {
+    const enumErr = checkEnum(who, EVENT_WHO, "Who");
+    if (enumErr) return bad(res, enumErr);
+    updates.who = who;
+  }
+  const keys = Object.keys(updates);
+  if (keys.length > 0) {
+    const set = keys.map((k) => `${k} = ?`).join(", ");
+    await db.run(`UPDATE events SET ${set} WHERE id = ?`, [...keys.map((k) => updates[k]), row.id]);
+  }
+  res.json({ ok: true });
 }));
 
 app.delete("/api/events/:id", requireAuth, ah(async (req, res) => {
@@ -394,9 +437,45 @@ app.post("/api/tasks", requireAuth, ah(async (req, res) => {
 app.patch("/api/tasks/:id", requireAuth, ah(async (req, res) => {
   const row = await loadOr404(res, "tasks", req.params.id);
   if (!row) return;
-  const { done } = req.body || {};
-  if (done !== 0 && done !== 1) return bad(res, "Done must be 0 or 1.");
-  await db.run("UPDATE tasks SET done = ? WHERE id = ?", [Boolean(done), row.id]);
+  const { title, assignee, category, dueDate, dueTime, notes, done } = req.body || {};
+  const updates = {};
+  if (title !== undefined) {
+    const err = reqTitle(title);
+    if (err) return bad(res, err);
+    updates.title = title.trim();
+  }
+  if (assignee !== undefined) {
+    const enumErr = checkEnum(assignee, TASK_ASSIGNEES, "Assignee");
+    if (enumErr) return bad(res, enumErr);
+    updates.assignee = assignee;
+  }
+  if (category !== undefined) {
+    const enumErr = checkEnum(category, TASK_CATEGORIES, "Category");
+    if (enumErr) return bad(res, enumErr);
+    updates.category = category;
+  }
+  if (dueDate !== undefined) {
+    if (dueDate !== "" && !isValidDate(dueDate)) return bad(res, "Due date must be YYYY-MM-DD.");
+    updates.due_date = dueDate;
+  }
+  if (dueTime !== undefined) {
+    if (dueTime !== "" && !isValidTime(dueTime)) return bad(res, "Due time must be HH:MM.");
+    updates.due_time = dueTime;
+  }
+  if (notes !== undefined) {
+    const v = optString(notes, 500);
+    if (v === null) return bad(res, "Notes must be 500 characters or fewer.");
+    updates.notes = v;
+  }
+  if (done !== undefined) {
+    if (done !== 0 && done !== 1) return bad(res, "Done must be 0 or 1.");
+    updates.done = Boolean(done);
+  }
+  const keys = Object.keys(updates);
+  if (keys.length > 0) {
+    const set = keys.map((k) => `${k} = ?`).join(", ");
+    await db.run(`UPDATE tasks SET ${set} WHERE id = ?`, [...keys.map((k) => updates[k]), row.id]);
+  }
   res.json({ ok: true });
 }));
 

@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS events (
   title TEXT NOT NULL,
   date TEXT NOT NULL,
   time TEXT DEFAULT '',
+  end_time TEXT DEFAULT '',
   location TEXT DEFAULT '',
   who TEXT DEFAULT 'Family',
   created_by TEXT NOT NULL,
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS events (
   title TEXT NOT NULL,
   date TEXT NOT NULL,
   time TEXT DEFAULT '',
+  end_time TEXT DEFAULT '',
   location TEXT DEFAULT '',
   who TEXT DEFAULT 'Family',
   created_by TEXT NOT NULL,
@@ -285,16 +287,25 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
 // migration. Postgres supports ADD COLUMN IF NOT EXISTS; SQLite does not, so
 // check PRAGMA table_info there first.
 async function migrate() {
-  const wanted = ['due_time', 'notes'];
+  const taskCols = ['due_time', 'notes'];
+  const eventCols = ['end_time'];
   if (usePg) {
-    for (const col of wanted) {
+    for (const col of taskCols) {
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
     }
+    for (const col of eventCols) {
+      await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
+    }
   } else {
-    const rows = sqliteDb.prepare(`PRAGMA table_info(tasks)`).all();
-    const have = new Set(rows.map((r) => r.name));
-    for (const col of wanted) {
-      if (!have.has(col)) sqliteDb.exec(`ALTER TABLE tasks ADD COLUMN ${col} TEXT DEFAULT ''`);
+    const taskRows = sqliteDb.prepare(`PRAGMA table_info(tasks)`).all();
+    const taskHave = new Set(taskRows.map((r) => r.name));
+    for (const col of taskCols) {
+      if (!taskHave.has(col)) sqliteDb.exec(`ALTER TABLE tasks ADD COLUMN ${col} TEXT DEFAULT ''`);
+    }
+    const eventRows = sqliteDb.prepare(`PRAGMA table_info(events)`).all();
+    const eventHave = new Set(eventRows.map((r) => r.name));
+    for (const col of eventCols) {
+      if (!eventHave.has(col)) sqliteDb.exec(`ALTER TABLE events ADD COLUMN ${col} TEXT DEFAULT ''`);
     }
   }
 }
