@@ -327,6 +327,27 @@ function renderHome() {
   }
   view.appendChild(taskCard);
 
+  // Today's meals
+  const mealTodayCard = el('div', 'card');
+  mealTodayCard.appendChild(el('h3', null, '🍽️ Today\u2019s meals'));
+  const todaysMeals = data.meals
+    .filter(function (m) { return m.date === today; })
+    .sort(function (a, b) { return (MEAL_ORDER[a.mealType] || 3) - (MEAL_ORDER[b.mealType] || 3); });
+  if (!todaysMeals.length) mealTodayCard.appendChild(emptyState('No meals planned for today.'));
+  else {
+    const ul = el('ul', 'list');
+    todaysMeals.forEach(function (m) {
+      const li = el('li');
+      const g = el('div', 'grow');
+      g.appendChild(el('div', 'title', m.title));
+      g.appendChild(el('div', 'muted small', m.mealType + (m.notes ? ' · ' + m.notes : '')));
+      li.appendChild(g);
+      ul.appendChild(li);
+    });
+    mealTodayCard.appendChild(ul);
+  }
+  view.appendChild(mealTodayCard);
+
   // Refills due soon (overdue or within 7 days)
   const refCard = el('div', 'card');
   refCard.appendChild(el('h3', null, '💊 Refills due soon'));
