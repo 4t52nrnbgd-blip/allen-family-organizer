@@ -159,6 +159,10 @@ const mapTask = (r) => r && {
   dueDate: r.due_date, dueTime: r.due_time || "", notes: r.notes || "",
   done: r.done, createdBy: r.created_by, createdAt: r.created_at,
 };
+const mapGoal = (r) => r && {
+  id: r.id, title: r.title, notes: r.notes || "", who: r.who,
+  done: r.done, createdBy: r.created_by, createdAt: r.created_at,
+};
 const mapRefill = (r) => r && {
   id: r.id, medication: r.medication, nextDue: r.next_due, intervalDays: r.interval_days,
   person: r.person, pharmacy: r.pharmacy, dosage: r.dosage, notes: r.notes,
@@ -293,10 +297,11 @@ app.post("/api/auth/reset-member-password", requireAuth, ah(async (req, res) => 
 const MEAL_ORDER = { Breakfast: 0, Lunch: 1, Dinner: 2, Snack: 3 };
 
 app.get("/api/overview", requireAuth, ah(async (req, res) => {
-  const [events, tasks, refills, meals, groceries, profile, routines, logs, reminders] =
+  const [events, tasks, goals, refills, meals, groceries, profile, routines, logs, reminders] =
     await Promise.all([
       db.all("SELECT * FROM events ORDER BY date ASC, time ASC"),
       db.all("SELECT * FROM tasks"),
+      db.all("SELECT * FROM goals ORDER BY done ASC, created_at ASC"),
       db.all("SELECT * FROM refills ORDER BY next_due ASC"),
       db.all("SELECT * FROM meals"),
       db.all("SELECT * FROM groceries"),
@@ -320,6 +325,7 @@ app.get("/api/overview", requireAuth, ah(async (req, res) => {
     today: todayStr(),
     events: events.map(mapEvent),
     tasks: tasks.map(mapTask),
+    goals: goals.map(mapGoal),
     refills: refills.map(mapRefill),
     meals: meals.map(mapMeal),
     groceries: groceries.map(mapGrocery),
@@ -483,6 +489,67 @@ app.delete("/api/tasks/:id", requireAuth, ah(async (req, res) => {
   const row = await loadOr404(res, "tasks", req.params.id);
   if (!row) return;
   await db.run("DELETE FROM tasks WHERE id = ?", [row.id]);
+  res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Goals
+// ---------------------------------------------------------------------------
+
+const GOAL_WHO = ["Michelle", "Chad", "Either"];
+
+app.post("/api/goals", requireAuth, ah(async (req, res) => {
+  const { title, notes, who } = req.body || {};
+  const err = reqTitle(title);
+  if (err) return bad(res, err);
+  const whoVal = who === undefined ? "Either" : who;
+  const enumErr = checkEnum(whoVal, GOAL_WHO, "Who");
+  if (enumErr) return bad(res, enumErr);
+  const notesVal = optString(notes, 500);
+  if (notesVal === null) return bad(res, "Notes must be 500 characters or fewer.");
+  const result = await db.run(
+    "INSERT INTO goals (title, notes, who, done, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+    [title.trim(), notesVal, whoVal, false, req.member, new Date().toISOString()]
+  );
+  res.json({ ok: true, id: result.id });
+}));
+
+app.patch("/api/goals/:id", requireAuth, ah(async (req, res) => {
+  const row = await loadOr404(res, "goals", req.params.id);
+  if (!row) return;
+  const { title, notes, who, done } = req.body || {};
+  const updates = {};
+  if (title !== undefined) {
+    const err = reqTitle(title);
+    if (err) return bad(res, err);
+    updates.title = title.trim();
+  }
+  if (notes !== undefined) {
+    const v = optString(notes, 500);
+    if (v === null) return bad(res, "Notes must be 500 characters or fewer.");
+    updates.notes = v;
+  }
+  if (who !== undefined) {
+    const enumErr = checkEnum(who, GOAL_WHO, "Who");
+    if (enumErr) return bad(res, enumErr);
+    updates.who = who;
+  }
+  if (done !== undefined) {
+    if (done !== 0 && done !== 1) return bad(res, "Done must be 0 or 1.");
+    updates.done = Boolean(done);
+  }
+  const keys = Object.keys(updates);
+  if (keys.length > 0) {
+    const set = keys.map((k) => `${k} = ?`).join(", ");
+    await db.run(`UPDATE goals SET ${set} WHERE id = ?`, [...keys.map((k) => updates[k]), row.id]);
+  }
+  res.json({ ok: true });
+}));
+
+app.delete("/api/goals/:id", requireAuth, ah(async (req, res) => {
+  const row = await loadOr404(res, "goals", req.params.id);
+  if (!row) return;
+  await db.run("DELETE FROM goals WHERE id = ?", [row.id]);
   res.json({ ok: true });
 }));
 
@@ -807,6 +874,7 @@ app.use((err, req, res, next) => {
 async function start() {
   await db.initDb();
   await db.seedIfEmpty();
+  await db.seedGoalsIfEmpty();
   const port = process.env.PORT || 3000;
   app.listen(port, "0.0.0.0", () => {
     console.log(`The Allen's listening on port ${port}`);

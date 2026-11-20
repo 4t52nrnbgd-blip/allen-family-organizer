@@ -91,6 +91,7 @@ let mealWeekStart = sundayStart(localToday());
 let editingMealId = null;
 let editingTaskId = null;
 let editingEventId = null;
+let editingGoalId = null;
 let lastUpdatedAt = null;
 let bearEditing = false;
 
@@ -312,6 +313,7 @@ function render() {
   if (currentTab === 'home') renderHome();
   else if (currentTab === 'calendar') renderCalendar();
   else if (currentTab === 'tasks') renderTasks();
+  else if (currentTab === 'goals') renderGoals();
   else if (currentTab === 'refills') renderRefills();
   else if (currentTab === 'meals') renderMeals();
   else if (currentTab === 'bear') renderBear();
@@ -907,6 +909,167 @@ function taskEditForm(t) {
       });
       editingTaskId = null;
       toast('Task updated.');
+      await refresh();
+    } catch (e2) { showFormError(err, e2); }
+  });
+  return form;
+}
+
+/* ---------- Goals ---------- */
+function goalRow(g) {
+  const li = el('li');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = !!g.done;
+  cb.setAttribute('aria-label', 'Mark done');
+  cb.addEventListener('change', async function () {
+    const next = cb.checked;
+    g.done = next ? 1 : 0; // optimistic: show the change right away, then save
+    render();
+    try {
+      await api('/api/goals/' + g.id, { method: 'PATCH', body: JSON.stringify({ done: next ? 1 : 0 }) });
+      await refresh();
+    } catch (e2) { toast(e2.message, true); g.done = next ? 0 : 1; render(); }
+  });
+  li.appendChild(cb);
+  li.appendChild(personDot(g.who || 'Either'));
+  const gEl = el('div', 'grow');
+  gEl.appendChild(el('div', g.done ? 'title done-text' : 'title', g.title));
+  const meta = [g.who || 'Either'];
+  if (g.notes) meta.push(g.notes);
+  gEl.appendChild(el('div', 'muted small', meta.join(' · ')));
+  li.appendChild(gEl);
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button'; editBtn.className = 'btn-secondary btn-small'; editBtn.textContent = 'Edit';
+  editBtn.addEventListener('click', function () { editingGoalId = g.id; render(); });
+  li.appendChild(editBtn);
+  const del = deleteBtn();
+  del.addEventListener('click', async function () {
+    if (!window.confirm('Delete this goal?')) return;
+    try { await api('/api/goals/' + g.id, { method: 'DELETE' }); toast('Goal deleted.'); await refresh(); }
+    catch (e2) { toast(e2.message, true); }
+  });
+  li.appendChild(del);
+  return li;
+}
+
+function renderGoals() {
+  view.appendChild(sectionTitle('Goals'));
+
+  const goals = (data.goals || []).slice();
+  const openGoals = goals.filter(function (g) { return !g.done; });
+  const doneGoals = goals.filter(function (g) { return g.done; });
+
+  const card = el('div', 'card');
+  if (!openGoals.length) card.appendChild(emptyState('No open goals yet. Add one below.'));
+  else {
+    const ul = el('ul', 'list');
+    openGoals.forEach(function (g) { if (g.id !== editingGoalId) ul.appendChild(goalRow(g)); });
+    card.appendChild(ul);
+  }
+  view.appendChild(card);
+
+  // Edit form for the goal being edited (in the main list or the Done section).
+  if (editingGoalId) {
+    const eg = goals.find(function (x) { return x.id === editingGoalId; });
+    if (eg) {
+      const editCard = el('div', 'card');
+      editCard.appendChild(goalEditForm(eg));
+      view.appendChild(editCard);
+    }
+  }
+
+  // Done section — completed goals tucked away, with a one-tap clear-out.
+  if (doneGoals.length) {
+    const doneCard = el('div', 'card');
+    doneCard.appendChild(el('h3', null, 'Done (' + doneGoals.length + ')'));
+    const doneList = el('ul', 'list');
+    doneList.hidden = true;
+    doneGoals.forEach(function (g) { if (g.id !== editingGoalId) doneList.appendChild(goalRow(g)); });
+    doneCard.appendChild(doneList);
+    const toggleBtn = submitBtn('Show completed', 'btn-secondary');
+    toggleBtn.type = 'button';
+    toggleBtn.addEventListener('click', function () {
+      doneList.hidden = !doneList.hidden;
+      toggleBtn.textContent = doneList.hidden ? 'Show completed' : 'Hide completed';
+    });
+    doneCard.appendChild(toggleBtn);
+    const clearBtn = submitBtn('Clear completed', 'btn-secondary');
+    clearBtn.type = 'button';
+    clearBtn.addEventListener('click', async function () {
+      if (!window.confirm('Delete all ' + doneGoals.length + ' completed goals?')) return;
+      try {
+        for (const g of doneGoals) await api('/api/goals/' + g.id, { method: 'DELETE' });
+        toast('Completed goals cleared.');
+        await refresh();
+      } catch (e2) { toast(e2.message, true); }
+    });
+    doneCard.appendChild(clearBtn);
+    view.appendChild(doneCard);
+  }
+
+  // Add goal form
+  const addCard = el('div', 'card');
+  addCard.appendChild(el('h3', null, 'Add a goal'));
+  const err = errorPara();
+  const form = document.createElement('form');
+  form.appendChild(labeledInput('Goal', textInput('title', { required: true, maxLength: 200, placeholder: 'e.g. Learn to cross-country ski' })));
+  form.appendChild(labeledInput('Who', selectInput('who', ['Either', 'Michelle', 'Chad'], (authState && authState.signedIn) || 'Michelle')));
+  form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, placeholder: 'Optional' })));
+  form.appendChild(err);
+  form.appendChild(submitBtn('Add goal'));
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    err.hidden = true;
+    try {
+      await api('/api/goals', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: form.title.value.trim(),
+          who: form.who.value,
+          notes: form.notes.value.trim() || undefined,
+        }),
+      });
+      toast('Goal added.');
+      await refresh();
+    } catch (e2) { showFormError(err, e2); }
+  });
+  addCard.appendChild(form);
+  view.appendChild(addCard);
+}
+
+function goalEditForm(g) {
+  const err = errorPara();
+  const form = document.createElement('form');
+  form.className = 'inline-form';
+  form.appendChild(labeledInput('Edit goal', textInput('title', { required: true, maxLength: 200, value: g.title })));
+  form.appendChild(labeledInput('Who', selectInput('who', ['Either', 'Michelle', 'Chad'], g.who || 'Either')));
+  form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, value: g.notes || '' })));
+  form.appendChild(err);
+  const btnRow = el('div', 'form-row');
+  const save = submitBtn('Save changes', 'btn-small');
+  save.style.marginTop = '0';
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'btn-secondary btn-small'; cancel.textContent = 'Cancel';
+  cancel.style.marginTop = '0';
+  cancel.addEventListener('click', function () { editingGoalId = null; render(); });
+  btnRow.appendChild(save);
+  btnRow.appendChild(cancel);
+  form.appendChild(btnRow);
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    err.hidden = true;
+    try {
+      await api('/api/goals/' + g.id, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: form.title.value.trim(),
+          who: form.who.value,
+          notes: form.notes.value.trim(),
+        }),
+      });
+      editingGoalId = null;
+      toast('Goal updated.');
       await refresh();
     } catch (e2) { showFormError(err, e2); }
   });

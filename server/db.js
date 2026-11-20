@@ -108,6 +108,15 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS goals (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  who TEXT DEFAULT 'Either',
+  done INTEGER DEFAULT 0,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS refills (
   id INTEGER PRIMARY KEY,
   medication TEXT NOT NULL,
@@ -213,6 +222,15 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS goals (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  who TEXT DEFAULT 'Either',
+  done BOOLEAN DEFAULT FALSE,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS refills (
   id SERIAL PRIMARY KEY,
   medication TEXT NOT NULL,
@@ -289,7 +307,13 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
 async function migrate() {
   const taskCols = ['due_time', 'notes'];
   const eventCols = ['end_time'];
+  // New goals table: the schemas above cover fresh installs via
+  // CREATE TABLE IF NOT EXISTS; run it here too so existing databases get it.
+  const goalsSql = usePg
+    ? `CREATE TABLE IF NOT EXISTS goals (id SERIAL PRIMARY KEY, title TEXT NOT NULL, notes TEXT DEFAULT '', who TEXT DEFAULT 'Either', done BOOLEAN DEFAULT FALSE, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`
+    : `CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT DEFAULT '', who TEXT DEFAULT 'Either', done INTEGER DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`;
   if (usePg) {
+    await pool.query(goalsSql);
     for (const col of taskCols) {
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
     }
@@ -297,6 +321,7 @@ async function migrate() {
       await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
     }
   } else {
+    sqliteDb.exec(goalsSql);
     const taskRows = sqliteDb.prepare(`PRAGMA table_info(tasks)`).all();
     const taskHave = new Set(taskRows.map((r) => r.name));
     for (const col of taskCols) {
@@ -390,4 +415,26 @@ async function seedIfEmpty() {
   return true;
 }
 
-module.exports = { get, all, run, initDb, seedIfEmpty, usePg };
+// Michelle's first goals, seeded once when the goals table is empty.
+// Runs at startup after the demo seed, so a fresh install still gets its
+// demo data first. Note: if both goals are later deleted, they will be
+// seeded again on the next restart.
+const GOAL_SEED = [
+  { title: "Cross-country ski at Round Valley", notes: "Winter goal — Round Valley, near Park City.", who: "Michelle" },
+  { title: "Bring Bear cross-country skiing", notes: "Round Valley trails are dog-friendly, so Bear can come along.", who: "Michelle" },
+];
+
+async function seedGoalsIfEmpty() {
+  const row = await get("SELECT COUNT(*) AS n FROM goals");
+  if (row && Number(row.n) > 0) return false;
+  const now = new Date().toISOString();
+  for (const g of GOAL_SEED) {
+    await run(
+      "INSERT INTO goals (title, notes, who, done, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+      [g.title, g.notes, g.who, false, "Michelle", now]
+    );
+  }
+  return true;
+}
+
+module.exports = { get, all, run, initDb, seedIfEmpty, seedGoalsIfEmpty, usePg };
