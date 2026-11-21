@@ -404,7 +404,7 @@ function renderHome() {
   mealTodayCard.appendChild(el('h3', null, '🍽️ Today\u2019s meals'));
   const todaysMeals = data.meals
     .filter(function (m) { return m.date === today; })
-    .sort(function (a, b) { return (MEAL_ORDER[a.mealType] || 3) - (MEAL_ORDER[b.mealType] || 3); });
+    .sort(function (a, b) { return mealOrder(a.mealType) - mealOrder(b.mealType); });
   if (!todaysMeals.length) mealTodayCard.appendChild(emptyState('No meals planned for today.'));
   else {
     const ul = el('ul', 'list');
@@ -427,7 +427,7 @@ function renderHome() {
   const tomTasks = data.tasks.filter(function (t) { return !t.done && t.dueDate === tomorrow; });
   const tomMeals = data.meals
     .filter(function (m) { return m.date === tomorrow; })
-    .sort(function (a, b) { return (MEAL_ORDER[a.mealType] || 3) - (MEAL_ORDER[b.mealType] || 3); });
+    .sort(function (a, b) { return mealOrder(a.mealType) - mealOrder(b.mealType); });
   if (!tomEvents.length && !tomTasks.length && !tomMeals.length) tomCard.appendChild(emptyState('Nothing planned for tomorrow yet.'));
   else {
     const ul = el('ul', 'list');
@@ -1169,6 +1169,8 @@ function renderRefills() {
 /* ---------- Meals & groceries ---------- */
 const MEAL_TYPES = ['Breakfast', 'Lunch', 'Dinner', 'Snack'];
 const MEAL_ORDER = { Breakfast: 0, Lunch: 1, Dinner: 2, Snack: 3 };
+// Breakfast is 0, which is falsy, so (MEAL_ORDER[x] || 3) wrongly ranks it last.
+function mealOrder(mealType) { return MEAL_ORDER[mealType] === undefined ? 4 : MEAL_ORDER[mealType]; }
 const GROCERY_CATEGORIES = ['Produce', 'Meat & dairy', 'Pantry', 'Frozen', 'Bakery', 'Household', 'Other'];
 
 function renderMeals() {
@@ -1205,7 +1207,7 @@ function renderMeals() {
     const card = el('div', 'card');
     const dayMeals = data.meals
       .filter(function (m) { return m.date === dateStr; })
-      .sort(function (a, b) { return (MEAL_ORDER[a.mealType] || 3) - (MEAL_ORDER[b.mealType] || 3); });
+      .sort(function (a, b) { return mealOrder(a.mealType) - mealOrder(b.mealType); });
 
     if (editingMealId) {
       const m = dayMeals.find(function (x) { return x.id === editingMealId; });
