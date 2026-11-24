@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   due_time TEXT DEFAULT '',
   notes TEXT DEFAULT '',
   done INTEGER DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -183,6 +184,23 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
   done INTEGER DEFAULT 0,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  "key" TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  member TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_sent_log (
+  task_id INTEGER NOT NULL,
+  sent_date TEXT NOT NULL,
+  PRIMARY KEY(task_id, sent_date)
 );
 `;
 
@@ -219,6 +237,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   due_time TEXT DEFAULT '',
   notes TEXT DEFAULT '',
   done BOOLEAN DEFAULT FALSE,
+  priority INTEGER NOT NULL DEFAULT 0,
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -298,6 +317,23 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
   created_by TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  "key" TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id SERIAL PRIMARY KEY,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  member TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS push_sent_log (
+  task_id INTEGER NOT NULL,
+  sent_date TEXT NOT NULL,
+  PRIMARY KEY(task_id, sent_date)
+);
 `;
 
 // Add columns to an existing database when the app updates: CREATE TABLE IF NOT
@@ -307,26 +343,48 @@ CREATE TABLE IF NOT EXISTS bear_reminders (
 async function migrate() {
   const taskCols = ['due_time', 'notes'];
   const eventCols = ['end_time'];
+  // Priority flag: INTEGER 0/1 in both dialects (not TEXT like due_time/notes),
+  // so it gets its own migration step with the same pattern.
+  const priorityCol = 'priority';
+  const priorityDefPg = 'INTEGER NOT NULL DEFAULT 0';
+  const priorityDefSqlite = 'INTEGER NOT NULL DEFAULT 0';
   // New goals table: the schemas above cover fresh installs via
   // CREATE TABLE IF NOT EXISTS; run it here too so existing databases get it.
   const goalsSql = usePg
     ? `CREATE TABLE IF NOT EXISTS goals (id SERIAL PRIMARY KEY, title TEXT NOT NULL, notes TEXT DEFAULT '', who TEXT DEFAULT 'Either', done BOOLEAN DEFAULT FALSE, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`
     : `CREATE TABLE IF NOT EXISTS goals (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT DEFAULT '', who TEXT DEFAULT 'Either', done INTEGER DEFAULT 0, created_by TEXT NOT NULL, created_at TEXT NOT NULL)`;
+  // Push tables: the schemas above cover fresh installs via
+  // CREATE TABLE IF NOT EXISTS; run them here too so existing databases get them.
+  const pushTablesSql = usePg
+    ? [
+        `CREATE TABLE IF NOT EXISTS settings ("key" TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS push_subscriptions (id SERIAL PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, member TEXT NOT NULL, created_at TEXT NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS push_sent_log (task_id INTEGER NOT NULL, sent_date TEXT NOT NULL, PRIMARY KEY(task_id, sent_date))`,
+      ]
+    : [
+        `CREATE TABLE IF NOT EXISTS settings ("key" TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS push_subscriptions (id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, member TEXT NOT NULL, created_at TEXT NOT NULL)`,
+        `CREATE TABLE IF NOT EXISTS push_sent_log (task_id INTEGER NOT NULL, sent_date TEXT NOT NULL, PRIMARY KEY(task_id, sent_date))`,
+      ];
   if (usePg) {
     await pool.query(goalsSql);
+    for (const sql of pushTablesSql) await pool.query(sql);
     for (const col of taskCols) {
       await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
     }
+    await pool.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ${priorityCol} ${priorityDefPg}`);
     for (const col of eventCols) {
       await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS ${col} TEXT DEFAULT ''`);
     }
   } else {
     sqliteDb.exec(goalsSql);
+    for (const sql of pushTablesSql) sqliteDb.exec(sql);
     const taskRows = sqliteDb.prepare(`PRAGMA table_info(tasks)`).all();
     const taskHave = new Set(taskRows.map((r) => r.name));
     for (const col of taskCols) {
       if (!taskHave.has(col)) sqliteDb.exec(`ALTER TABLE tasks ADD COLUMN ${col} TEXT DEFAULT ''`);
     }
+    if (!taskHave.has(priorityCol)) sqliteDb.exec(`ALTER TABLE tasks ADD COLUMN ${priorityCol} ${priorityDefSqlite}`);
     const eventRows = sqliteDb.prepare(`PRAGMA table_info(events)`).all();
     const eventHave = new Set(eventRows.map((r) => r.name));
     for (const col of eventCols) {

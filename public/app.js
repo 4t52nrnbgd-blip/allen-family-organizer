@@ -94,6 +94,7 @@ let editingEventId = null;
 let editingGoalId = null;
 let lastUpdatedAt = null;
 let bearEditing = false;
+let pushRegistration = null; // service worker registration for push, once registered
 
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({
@@ -129,6 +130,159 @@ function dueBadge(dateStr, label) {
   else if (diff <= 3) { b.classList.add('badge-soon'); b.textContent = (label || 'Due') + ' in ' + diff + 'd'; }
   else { b.classList.add('badge-ok'); b.textContent = (label || 'Due') + ' ' + shortDate(dateStr); }
   return b;
+}
+
+function priorityBadge() { // small "Priority" flag shown on priority task rows
+  return el('span', 'badge badge-priority', '★ Priority');
+}
+
+function priorityCheckbox(checked) { // Priority toggle for the task add/edit forms
+  const wrap = el('label', 'checkbox-row');
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.name = 'priority';
+  cb.checked = !!checked;
+  wrap.appendChild(cb);
+  wrap.appendChild(document.createTextNode('Priority — flag this task as important'));
+  return wrap;
+}
+
+/* ---------- push notifications (Web Push, priority tasks) ---------- */
+// Quiet by design: unsupported browsers simply never show the card's buttons,
+// and failures show plain text in the card, never an error toast.
+function pushSupported() {
+  return ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window);
+}
+
+async function registerPushServiceWorker() {
+  if (!pushSupported()) return;
+  try {
+    pushRegistration = await navigator.serviceWorker.register('/sw.js');
+  } catch (e) {
+    pushRegistration = null; // unsupported or blocked — the card degrades to text
+  }
+}
+
+function isIOSDevice() { // iPhone/iPad, including iPadOS reporting as Macintosh
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent)) return true;
+  return navigator.platform === 'Macintosh' && navigator.maxTouchPoints > 1 && 'ontouchend' in window;
+}
+
+function isStandaloneMode() {
+  if (navigator.standalone) return true;
+  return typeof window.matchMedia === 'function' &&
+    window.matchMedia('(display-mode: standalone)').matches;
+}
+
+function urlBase64ToUint8Array(base64String) { // VAPID public key -> Uint8Array
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+// Refresh the per-member status lines from the browser's live subscription.
+async function refreshPushStatus(statusEls) {
+  if (!statusEls.Michelle.isConnected) return; // Home re-rendered since the call started
+  function setAll(text) {
+    statusEls.Michelle.textContent = text;
+    statusEls.Chad.textContent = text;
+  }
+  if (!pushSupported()) {
+    setAll('Notifications are not supported in this browser.');
+    return;
+  }
+  let reg = pushRegistration;
+  try {
+    if (!reg) reg = await navigator.serviceWorker.getRegistration();
+  } catch (e) { reg = null; }
+  if (!reg) { setAll('Notifications off'); return; }
+  let sub = null;
+  try { sub = await reg.pushManager.getSubscription(); } catch (e) { sub = null; }
+  if (!sub) { setAll('Notifications off'); return; }
+  let member = null;
+  try {
+    const info = await api('/api/push/subscription?endpoint=' + encodeURIComponent(sub.endpoint));
+    member = info.member || null;
+  } catch (e) { member = null; }
+  if (!statusEls.Michelle.isConnected) return;
+  if (member) {
+    statusEls[member].textContent = 'Notifications on for ' + member;
+    statusEls[member === 'Michelle' ? 'Chad' : 'Michelle'].textContent = 'Notifications off';
+  } else {
+    setAll('Notifications on for this device.');
+  }
+}
+
+async function enablePushFor(member, statusEls) {
+  const status = statusEls[member];
+  if (!pushSupported()) {
+    status.textContent = 'Notifications are not supported in this browser.';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    status.textContent = 'Notifications are blocked for this site. Allow notifications in your browser settings, then try again.';
+    return;
+  }
+  try {
+    if (Notification.permission !== 'granted') {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        status.textContent = 'Notifications were not allowed. You can tap Enable again if you change your mind.';
+        return;
+      }
+    }
+    let reg = pushRegistration;
+    if (!reg) reg = await navigator.serviceWorker.register('/sw.js');
+    pushRegistration = reg;
+    const keyData = await api('/api/push/vapid-public-key');
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
+    });
+    const subJson = sub.toJSON();
+    await api('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint: subJson.endpoint, keys: subJson.keys, member: member }),
+    });
+    await refreshPushStatus(statusEls);
+    toast('Notifications on for ' + member + '.');
+  } catch (e) {
+    status.textContent = 'Could not turn on notifications. Please try again.';
+  }
+}
+
+// "Priority notifications" card on Home, under the Priority alerts card.
+// One phone holds one subscription, so enabling for the other member switches
+// this phone's notifications to them.
+function renderPushCard() {
+  const card = el('div', 'card push-card');
+  card.appendChild(el('h3', null, '🔔 Priority notifications'));
+  if (isIOSDevice() && !isStandaloneMode()) {
+    card.appendChild(el('p', 'muted', 'On iPhone, notifications need iOS 16.4 or newer and the app saved to your Home Screen (Share → Add to Home Screen). Open it from the Home Screen, then tap Enable here.'));
+    return card;
+  }
+  if (!pushSupported()) {
+    card.appendChild(el('p', 'muted', 'Notifications are not supported in this browser.'));
+    return card;
+  }
+  card.appendChild(el('p', 'muted small', 'Get a phone notification when a priority task is due. One phone can be enabled for Michelle or Chad — enabling for the other person switches this phone to them.'));
+  const statusEls = {};
+  ['Michelle', 'Chad'].forEach(function (member) {
+    const status = el('p', 'muted small push-status', 'Checking notification status...');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-block btn-secondary';
+    btn.textContent = 'Enable for ' + member;
+    btn.addEventListener('click', function () { enablePushFor(member, statusEls); });
+    statusEls[member] = status;
+    card.appendChild(status);
+    card.appendChild(btn);
+  });
+  refreshPushStatus(statusEls);
+  return card;
 }
 
 /* ---------- shared form builders ---------- */
@@ -328,6 +482,48 @@ function renderHome() {
   const tomorrow = addDays(today, 1);
   view.appendChild(sectionTitle('Today — ' + prettyDate(today)));
 
+  // Priority alerts: undone priority tasks — due today first, then overdue,
+  // then upcoming. Tap a row to open the Tasks tab.
+  const priCard = el('div', 'card priority-card');
+  priCard.appendChild(el('h3', null, '★ Priority alerts'));
+  const priTasks = data.tasks.filter(function (t) { return !t.done && t.priority; });
+  function priRank(t) {
+    if (!t.dueDate) return 3;
+    const diff = dayDiff(today, t.dueDate);
+    if (diff === 0) return 0;
+    if (diff < 0) return 1;
+    return 2;
+  }
+  priTasks.sort(function (a, b) {
+    return priRank(a) - priRank(b) ||
+      ((a.dueDate || '9999-12-31').localeCompare(b.dueDate || '9999-12-31')) ||
+      ((a.dueTime || '99:99').localeCompare(b.dueTime || '99:99'));
+  });
+  if (!priTasks.length) priCard.appendChild(emptyState('No priority tasks right now.'));
+  else {
+    const ul = el('ul', 'list');
+    priTasks.forEach(function (t) {
+      const li = el('li', 'priority-row priority-alert-row');
+      li.appendChild(personDot(t.assignee || 'Either'));
+      const g = el('div', 'grow');
+      g.appendChild(el('div', 'title', t.title));
+      const meta = [t.assignee || 'Either'];
+      if (t.dueDate) meta.push(prettyDate(t.dueDate) + (t.dueTime ? ' ' + fmtTime(t.dueTime) : ''));
+      else if (t.dueTime) meta.push(fmtTime(t.dueTime));
+      else meta.push('No due date');
+      g.appendChild(el('div', 'muted small', meta.join(' · ')));
+      li.appendChild(g);
+      if (t.dueDate) li.appendChild(dueBadge(t.dueDate));
+      li.addEventListener('click', function () { currentTab = 'tasks'; render(); });
+      ul.appendChild(li);
+    });
+    priCard.appendChild(ul);
+  }
+  view.appendChild(priCard);
+
+  // Push notifications for priority tasks (enable per member).
+  view.appendChild(renderPushCard());
+
   // Up next: the next timed event or task, today first, then tomorrow.
   const nowHM = pad(new Date().getHours()) + ':' + pad(new Date().getMinutes());
   function upcomingItems(dateStr, after) {
@@ -387,9 +583,11 @@ function renderHome() {
     const ul = el('ul', 'list');
     dueTasks.forEach(function (t) {
       const li = el('li');
+      if (t.priority) li.classList.add('priority-row');
       li.appendChild(personDot(t.assignee || 'Either'));
       const g = el('div', 'grow');
       g.appendChild(el('div', 'title', t.title));
+      if (t.priority) g.appendChild(priorityBadge());
       g.appendChild(el('div', 'muted small', (t.assignee || 'Either') + ' · ' + prettyDate(t.dueDate)));
       li.appendChild(g);
       li.appendChild(dueBadge(t.dueDate));
@@ -716,6 +914,7 @@ function eventEditForm(e) {
 /* ---------- Tasks ---------- */
 function taskRow(t) {
   const li = el('li');
+  if (t.priority && !t.done) li.classList.add('priority-row');
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = !!t.done;
@@ -733,6 +932,7 @@ function taskRow(t) {
   li.appendChild(personDot(t.assignee || 'Either'));
   const g = el('div', 'grow');
   g.appendChild(el('div', t.done ? 'title done-text' : 'title', t.title));
+  if (t.priority && !t.done) g.appendChild(priorityBadge());
   const meta = [t.assignee || 'Either', t.category || 'Household'];
   if (t.dueDate) {
     if (taskFilter === 'Today' && !t.done) meta.push(t.dueTime ? fmtTime(t.dueTime) : 'Today');
@@ -842,6 +1042,7 @@ function renderTasks() {
   row2.appendChild(labeledInput('Due time', textInput('dueTime', { type: 'time' })));
   form.appendChild(row2);
   form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, placeholder: 'Optional' })));
+  form.appendChild(priorityCheckbox(false));
   form.appendChild(err);
   form.appendChild(submitBtn('Add task'));
   form.addEventListener('submit', async function (e) {
@@ -857,6 +1058,7 @@ function renderTasks() {
           dueDate: form.dueDate.value || undefined,
           dueTime: form.dueTime.value || undefined,
           notes: form.notes.value.trim() || undefined,
+          priority: form.priority.checked ? 1 : 0,
         }),
       });
       toast('Task added.');
@@ -881,6 +1083,7 @@ function taskEditForm(t) {
   row2.appendChild(labeledInput('Due time', textInput('dueTime', { type: 'time', value: t.dueTime || '' })));
   form.appendChild(row2);
   form.appendChild(labeledInput('Notes', textInput('notes', { maxLength: 500, value: t.notes || '' })));
+  form.appendChild(priorityCheckbox(!!t.priority));
   form.appendChild(err);
   const btnRow = el('div', 'form-row');
   const save = submitBtn('Save changes', 'btn-small');
@@ -905,6 +1108,7 @@ function taskEditForm(t) {
           dueDate: form.dueDate.value,
           dueTime: form.dueTime.value,
           notes: form.notes.value.trim(),
+          priority: form.priority.checked ? 1 : 0,
         }),
       });
       editingTaskId = null;
@@ -1797,6 +2001,7 @@ function renderAccount() {
 
 /* ---------- boot ---------- */
 (async function init() {
+  registerPushServiceWorker(); // quiet when unsupported — no toast, no error
   try {
     authState = await api('/api/auth/state');
   } catch (e) {

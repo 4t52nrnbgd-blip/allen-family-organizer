@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const webPush = require("web-push");
 const db = require("./db");
 
 const app = express();
@@ -31,6 +32,34 @@ void SESSION_SECRET; // Sessions are random tokens; the secret is reserved for f
 
 const SESSION_DAYS = 30;
 const MEMBERS = ["Michelle", "Chad"];
+
+// Web Push (VAPID): keys live in the settings table so they survive restarts.
+// The subject is the app's own origin — VAPID accepts a URL or a mailto:,
+// and no contact email exists for this app, so no email is invented here.
+// The private key is never logged and never sent in any response.
+const VAPID_SUBJECT = "https://the-allens.onrender.com";
+
+async function getVapidKeys() {
+  const pubRow = await db.get('SELECT value FROM settings WHERE "key" = ?', ["vapid_public"]);
+  const privRow = await db.get('SELECT value FROM settings WHERE "key" = ?', ["vapid_private"]);
+  let publicKey = pubRow && pubRow.value;
+  let privateKey = privRow && privRow.value;
+  if (!publicKey || !privateKey) {
+    const keys = webPush.generateVAPIDKeys();
+    publicKey = keys.publicKey;
+    privateKey = keys.privateKey;
+    await db.run(
+      'INSERT INTO settings ("key", value) VALUES (?, ?) ON CONFLICT("key") DO UPDATE SET value = excluded.value',
+      ["vapid_public", publicKey]
+    );
+    await db.run(
+      'INSERT INTO settings ("key", value) VALUES (?, ?) ON CONFLICT("key") DO UPDATE SET value = excluded.value',
+      ["vapid_private", privateKey]
+    );
+  }
+  webPush.setVapidDetails(VAPID_SUBJECT, publicKey, privateKey);
+  return { publicKey, privateKey };
+}
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -157,7 +186,7 @@ const mapEvent = (r) => r && {
 const mapTask = (r) => r && {
   id: r.id, title: r.title, assignee: r.assignee, category: r.category,
   dueDate: r.due_date, dueTime: r.due_time || "", notes: r.notes || "",
-  done: r.done, createdBy: r.created_by, createdAt: r.created_at,
+  done: r.done, priority: r.priority || 0, createdBy: r.created_by, createdAt: r.created_at,
 };
 const mapGoal = (r) => r && {
   id: r.id, title: r.title, notes: r.notes || "", who: r.who,
@@ -418,7 +447,7 @@ const TASK_ASSIGNEES = ["Michelle", "Chad", "Either"];
 const TASK_CATEGORIES = ["Household", "Shopping", "Bear's care", "Health", "Faith & service", "Other"];
 
 app.post("/api/tasks", requireAuth, ah(async (req, res) => {
-  const { title, assignee, category, dueDate, dueTime, notes } = req.body || {};
+  const { title, assignee, category, dueDate, dueTime, notes, priority } = req.body || {};
   const err = reqTitle(title);
   if (err) return bad(res, err);
   const assigneeVal = assignee === undefined ? "Either" : assignee;
@@ -426,6 +455,8 @@ app.post("/api/tasks", requireAuth, ah(async (req, res) => {
   const dueVal = dueDate === undefined ? "" : dueDate;
   const dueTimeVal = dueTime === undefined ? "" : dueTime;
   const notesVal = optString(notes, 500);
+  const priorityVal = priority === undefined ? 0 : priority;
+  if (priorityVal !== 0 && priorityVal !== 1) return bad(res, "Priority must be 0 or 1.");
   let enumErr = checkEnum(assigneeVal, TASK_ASSIGNEES, "Assignee");
   if (enumErr) return bad(res, enumErr);
   enumErr = checkEnum(categoryVal, TASK_CATEGORIES, "Category");
@@ -434,8 +465,8 @@ app.post("/api/tasks", requireAuth, ah(async (req, res) => {
   if (dueTimeVal !== "" && !isValidTime(dueTimeVal)) return bad(res, "Due time must be HH:MM.");
   if (notesVal === null) return bad(res, "Notes must be 500 characters or fewer.");
   const result = await db.run(
-    "INSERT INTO tasks (title, assignee, category, due_date, due_time, notes, done, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-    [title.trim(), assigneeVal, categoryVal, dueVal, dueTimeVal, notesVal, false, req.member, new Date().toISOString()]
+    "INSERT INTO tasks (title, assignee, category, due_date, due_time, notes, done, priority, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+    [title.trim(), assigneeVal, categoryVal, dueVal, dueTimeVal, notesVal, false, priorityVal, req.member, new Date().toISOString()]
   );
   res.json({ ok: true, id: result.id });
 }));
@@ -443,7 +474,7 @@ app.post("/api/tasks", requireAuth, ah(async (req, res) => {
 app.patch("/api/tasks/:id", requireAuth, ah(async (req, res) => {
   const row = await loadOr404(res, "tasks", req.params.id);
   if (!row) return;
-  const { title, assignee, category, dueDate, dueTime, notes, done } = req.body || {};
+  const { title, assignee, category, dueDate, dueTime, notes, done, priority } = req.body || {};
   const updates = {};
   if (title !== undefined) {
     const err = reqTitle(title);
@@ -476,6 +507,10 @@ app.patch("/api/tasks/:id", requireAuth, ah(async (req, res) => {
   if (done !== undefined) {
     if (done !== 0 && done !== 1) return bad(res, "Done must be 0 or 1.");
     updates.done = Boolean(done);
+  }
+  if (priority !== undefined) {
+    if (priority !== 0 && priority !== 1) return bad(res, "Priority must be 0 or 1.");
+    updates.priority = priority;
   }
   const keys = Object.keys(updates);
   if (keys.length > 0) {
@@ -551,6 +586,116 @@ app.delete("/api/goals/:id", requireAuth, ah(async (req, res) => {
   if (!row) return;
   await db.run("DELETE FROM goals WHERE id = ?", [row.id]);
   res.json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Push notifications (Web Push) for priority tasks
+// ---------------------------------------------------------------------------
+
+// Public VAPID key, so a browser can subscribe. The private key never leaves the server.
+app.get("/api/push/vapid-public-key", requireAuth, ah(async (req, res) => {
+  const keys = await getVapidKeys();
+  res.json({ publicKey: keys.publicKey });
+}));
+
+// Which member (if any) this browser endpoint is subscribed for. The client
+// passes its own push subscription endpoint; nothing else is exposed.
+app.get("/api/push/subscription", requireAuth, ah(async (req, res) => {
+  const endpoint = req.query.endpoint;
+  if (typeof endpoint !== "string" || endpoint === "") {
+    return res.json({ subscribed: false, member: null });
+  }
+  const row = await db.get("SELECT member FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  if (!row) return res.json({ subscribed: false, member: null });
+  res.json({ subscribed: true, member: row.member });
+}));
+
+// Store (or update, by endpoint) one browser's push subscription for a member.
+app.post("/api/push/subscribe", requireAuth, ah(async (req, res) => {
+  const { endpoint, keys, member } = req.body || {};
+  if (!MEMBERS.includes(member)) return bad(res, "Please choose Michelle or Chad.");
+  if (typeof endpoint !== "string" || endpoint.trim() === "") {
+    return bad(res, "Endpoint is required.");
+  }
+  if (!keys || typeof keys.p256dh !== "string" || keys.p256dh === "" ||
+      typeof keys.auth !== "string" || keys.auth === "") {
+    return bad(res, "Subscription keys are required.");
+  }
+  await db.run(
+    `INSERT INTO push_subscriptions (endpoint, p256dh, auth, member, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, member = excluded.member, created_at = excluded.created_at`,
+    [endpoint, keys.p256dh, keys.auth, member, new Date().toISOString()]
+  );
+  res.json({ ok: true });
+}));
+
+// Remove one browser's push subscription. Still ok when it was not found.
+app.delete("/api/push/subscribe", requireAuth, ah(async (req, res) => {
+  const { endpoint } = req.body || {};
+  if (typeof endpoint !== "string" || endpoint.trim() === "") {
+    return bad(res, "Endpoint is required.");
+  }
+  await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  res.json({ ok: true });
+}));
+
+// Morning check: send one push per undone priority task due today or earlier
+// (overdue included) to every stored subscription. No auth by design — this is
+// fired by an external morning check. A task is sent at most once per day
+// (push_sent_log); the log row is recorded after attempting all subscriptions,
+// even when some deliveries fail, so a retry never spams. Dead subscriptions
+// (410/404 from the push service) are removed. A failed delivery never fails
+// the request — results are collected and summarized.
+app.post("/api/push/send-due", ah(async (req, res) => {
+  await getVapidKeys();
+  const today = todayStr();
+  const tasks = await db.all(
+    "SELECT * FROM tasks WHERE done = ? AND priority = ? AND due_date <> '' AND due_date <= ? ORDER BY due_date ASC, id ASC",
+    [false, 1, today]
+  );
+  const subscriptions = await db.all(
+    "SELECT endpoint, p256dh, auth, member FROM push_subscriptions ORDER BY created_at ASC"
+  );
+  let sent = 0;
+  let delivered = 0;
+  let failed = 0;
+  const deadEndpoints = [];
+  if (subscriptions.length > 0) {
+    for (const task of tasks) {
+      const logged = await db.get(
+        "SELECT task_id FROM push_sent_log WHERE task_id = ? AND sent_date = ?",
+        [task.id, today]
+      );
+      if (logged) continue;
+      const duePart = task.due_date + (task.due_time ? " " + task.due_time : "");
+      const payload = JSON.stringify({
+        title: "Priority: " + task.title,
+        body: "Due " + duePart + " — " + (task.assignee || "Either"),
+        tag: "priority-task-" + task.id,
+      });
+      for (const sub of subscriptions) {
+        try {
+          await webPush.sendNotification(
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+            payload
+          );
+          delivered += 1;
+        } catch (e) {
+          failed += 1;
+          if (e && (e.statusCode === 410 || e.statusCode === 404)) deadEndpoints.push(sub.endpoint);
+        }
+      }
+      await db.run(
+        "INSERT INTO push_sent_log (task_id, sent_date) VALUES (?, ?) ON CONFLICT(task_id, sent_date) DO NOTHING",
+        [task.id, today]
+      );
+      sent += 1;
+    }
+  }
+  for (const endpoint of [...new Set(deadEndpoints)]) {
+    await db.run("DELETE FROM push_subscriptions WHERE endpoint = ?", [endpoint]);
+  }
+  res.json({ ok: true, sent, delivered, failed, subscriptions: subscriptions.length });
 }));
 
 // ---------------------------------------------------------------------------
@@ -875,6 +1020,7 @@ async function start() {
   await db.initDb();
   await db.seedIfEmpty();
   await db.seedGoalsIfEmpty();
+  await getVapidKeys();
   const port = process.env.PORT || 3000;
   app.listen(port, "0.0.0.0", () => {
     console.log(`The Allen's listening on port ${port}`);

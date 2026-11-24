@@ -13,6 +13,9 @@
   --honey-bg: #f7e8c8;
   --danger: #a44a3f;
   --danger-bg: #f6ddd8;
+  --priority-bg: #e6f2e3;
+  --priority-border: #5f7d5f;
+  --priority-text: #33502f;
   --line: #e3ddcf;
   --radius: 16px;
   --shadow: 0 2px 8px rgba(71, 97, 71, 0.12);
@@ -113,6 +116,24 @@ h3 { font-size: 1.05rem; margin: 0 0 8px; color: var(--sage-darker); }
 .badge-soon { background: var(--honey-bg); color: var(--honey); }
 .badge-overdue { background: var(--danger-bg); color: var(--danger); }
 .badge-neutral { background: #eee9db; color: var(--ink-soft); }
+.badge-priority { background: var(--sage-light); color: var(--sage-darker); border: 1px solid var(--priority-border); }
+
+/* Priority tasks: pale sage alert treatment — tinted background, darker
+   green border, dark text — on the row and on the Home alerts card. */
+.priority-card { background: var(--priority-bg); border: 1.5px solid var(--priority-border); }
+.list li.priority-row {
+  background: var(--priority-bg);
+  border: 1.5px solid var(--priority-border);
+  border-radius: 12px;
+  color: var(--priority-text);
+  padding: 10px;
+  margin-bottom: 6px;
+}
+.priority-alert-row { cursor: pointer; }
+
+/* Push notifications card: space between the per-member status + button rows. */
+.push-card .push-status { margin: 10px 0 6px; }
+.push-card .btn-block + .push-status { margin-top: 14px; }
 
 /* Buttons */
 button, .btn {
